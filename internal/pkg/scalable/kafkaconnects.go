@@ -29,14 +29,10 @@ type kafkaConnect struct {
 
 // getKafkaConnects is the getResourceFunc for KafkaConnect.
 func getKafkaConnects(namespace string, clientsets *Clientsets, ctx context.Context) ([]Workload, error) {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   kafkaConnectGVK.Group,
-		Version: kafkaConnectGVK.Version,
-		Kind:    kafkaConnectGVK.Kind + "List",
-	})
-
-	if err := clientsets.Client.List(ctx, list, ctrlclient.InNamespace(namespace)); err != nil {
+	items, gvk, err := listStrimziResources(ctx, func(ctx context.Context, list *unstructured.UnstructuredList) error {
+		return clientsets.Client.List(ctx, list, ctrlclient.InNamespace(namespace)) //nolint:wrapcheck // wrapped by the caller
+	}, kafkaConnectGVK)
+	if err != nil {
 		if apimeta.IsNoMatchError(err) {
 			slog.Warn("strimzi CRD not found in cluster, skipping", "kind", kafkaConnectGVK.Kind, "error", err)
 			return nil, nil
@@ -45,10 +41,10 @@ func getKafkaConnects(namespace string, clientsets *Clientsets, ctx context.Cont
 		return nil, fmt.Errorf("failed to get kafkaconnects: %w", err)
 	}
 
-	results := make([]Workload, 0, len(list.Items))
-	for i := range list.Items {
-		item := list.Items[i]
-		setGroupVersionKindIfEmpty(&item, kafkaConnectGVK)
+	results := make([]Workload, 0, len(items))
+	for i := range items {
+		item := items[i]
+		setGroupVersionKindIfEmpty(&item, gvk)
 		results = append(results, &replicaScaledWorkload{&kafkaConnect{&item}})
 	}
 
@@ -143,7 +139,7 @@ func (k *kafkaConnect) Compare(workloadCopy Workload) (jsondiff.Patch, error) {
 // Reget regets the workload to ensure the latest state.
 func (k *kafkaConnect) Reget(clientsets *Clientsets, ctx context.Context) error {
 	fresh := &unstructured.Unstructured{}
-	setGroupVersionKindIfEmpty(fresh, kafkaConnectGVK)
+	setGroupVersionKindIfEmpty(fresh, gvkOrDefault(k.Unstructured, kafkaConnectGVK))
 
 	err := clientsets.Client.Get(ctx, ctrlclient.ObjectKey{Namespace: k.GetNamespace(), Name: k.GetName()}, fresh)
 	if err != nil {

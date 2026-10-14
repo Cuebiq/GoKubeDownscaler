@@ -29,14 +29,10 @@ type kafkaBridge struct {
 
 // getKafkaBridges is the getResourceFunc for KafkaBridge.
 func getKafkaBridges(namespace string, clientsets *Clientsets, ctx context.Context) ([]Workload, error) {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   kafkaBridgeGVK.Group,
-		Version: kafkaBridgeGVK.Version,
-		Kind:    kafkaBridgeGVK.Kind + "List",
-	})
-
-	if err := clientsets.Client.List(ctx, list, ctrlclient.InNamespace(namespace)); err != nil {
+	items, gvk, err := listStrimziResources(ctx, func(ctx context.Context, list *unstructured.UnstructuredList) error {
+		return clientsets.Client.List(ctx, list, ctrlclient.InNamespace(namespace)) //nolint:wrapcheck // wrapped by the caller
+	}, kafkaBridgeGVK)
+	if err != nil {
 		if apimeta.IsNoMatchError(err) {
 			slog.Warn("strimzi CRD not found in cluster, skipping", "kind", kafkaBridgeGVK.Kind, "error", err)
 			return nil, nil
@@ -45,10 +41,10 @@ func getKafkaBridges(namespace string, clientsets *Clientsets, ctx context.Conte
 		return nil, fmt.Errorf("failed to get kafkabridges: %w", err)
 	}
 
-	results := make([]Workload, 0, len(list.Items))
-	for i := range list.Items {
-		item := list.Items[i]
-		setGroupVersionKindIfEmpty(&item, kafkaBridgeGVK)
+	results := make([]Workload, 0, len(items))
+	for i := range items {
+		item := items[i]
+		setGroupVersionKindIfEmpty(&item, gvk)
 		results = append(results, &replicaScaledWorkload{&kafkaBridge{&item}})
 	}
 
@@ -143,7 +139,7 @@ func (k *kafkaBridge) Compare(workloadCopy Workload) (jsondiff.Patch, error) {
 // Reget regets the workload to ensure the latest state.
 func (k *kafkaBridge) Reget(clientsets *Clientsets, ctx context.Context) error {
 	fresh := &unstructured.Unstructured{}
-	setGroupVersionKindIfEmpty(fresh, kafkaBridgeGVK)
+	setGroupVersionKindIfEmpty(fresh, gvkOrDefault(k.Unstructured, kafkaBridgeGVK))
 
 	err := clientsets.Client.Get(ctx, ctrlclient.ObjectKey{Namespace: k.GetNamespace(), Name: k.GetName()}, fresh)
 	if err != nil {

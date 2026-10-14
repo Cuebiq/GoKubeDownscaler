@@ -29,14 +29,10 @@ type kafkaMirrorMaker2 struct {
 
 // getKafkaMirrorMaker2s is the getResourceFunc for KafkaMirrorMaker2.
 func getKafkaMirrorMaker2s(namespace string, clientsets *Clientsets, ctx context.Context) ([]Workload, error) {
-	list := &unstructured.UnstructuredList{}
-	list.SetGroupVersionKind(schema.GroupVersionKind{
-		Group:   kafkaMirrorMaker2GVK.Group,
-		Version: kafkaMirrorMaker2GVK.Version,
-		Kind:    kafkaMirrorMaker2GVK.Kind + "List",
-	})
-
-	if err := clientsets.Client.List(ctx, list, ctrlclient.InNamespace(namespace)); err != nil {
+	items, gvk, err := listStrimziResources(ctx, func(ctx context.Context, list *unstructured.UnstructuredList) error {
+		return clientsets.Client.List(ctx, list, ctrlclient.InNamespace(namespace)) //nolint:wrapcheck // wrapped by the caller
+	}, kafkaMirrorMaker2GVK)
+	if err != nil {
 		if apimeta.IsNoMatchError(err) {
 			slog.Warn("strimzi CRD not found in cluster, skipping", "kind", kafkaMirrorMaker2GVK.Kind, "error", err)
 			return nil, nil
@@ -45,10 +41,10 @@ func getKafkaMirrorMaker2s(namespace string, clientsets *Clientsets, ctx context
 		return nil, fmt.Errorf("failed to get kafkamirrormaker2s: %w", err)
 	}
 
-	results := make([]Workload, 0, len(list.Items))
-	for i := range list.Items {
-		item := list.Items[i]
-		setGroupVersionKindIfEmpty(&item, kafkaMirrorMaker2GVK)
+	results := make([]Workload, 0, len(items))
+	for i := range items {
+		item := items[i]
+		setGroupVersionKindIfEmpty(&item, gvk)
 		results = append(results, &replicaScaledWorkload{&kafkaMirrorMaker2{&item}})
 	}
 
@@ -143,7 +139,7 @@ func (k *kafkaMirrorMaker2) Compare(workloadCopy Workload) (jsondiff.Patch, erro
 // Reget regets the workload to ensure the latest state.
 func (k *kafkaMirrorMaker2) Reget(clientsets *Clientsets, ctx context.Context) error {
 	fresh := &unstructured.Unstructured{}
-	setGroupVersionKindIfEmpty(fresh, kafkaMirrorMaker2GVK)
+	setGroupVersionKindIfEmpty(fresh, gvkOrDefault(k.Unstructured, kafkaMirrorMaker2GVK))
 
 	err := clientsets.Client.Get(ctx, ctrlclient.ObjectKey{Namespace: k.GetNamespace(), Name: k.GetName()}, fresh)
 	if err != nil {

@@ -1,6 +1,7 @@
 package scalable
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"math"
@@ -11,6 +12,8 @@ import (
 	"github.com/caas-team/gokubedownscaler/internal/pkg/metrics"
 	"github.com/caas-team/gokubedownscaler/internal/pkg/util"
 	"github.com/caas-team/gokubedownscaler/internal/pkg/values"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -33,6 +36,7 @@ const (
 	jobKind                     = "Job"
 	kafkaStrimziGroup           = "kafka.strimzi.io"
 	kafkaStrimziVersion         = "v1"
+	kafkaStrimziLegacyVersion   = "v1beta2"
 	kafkaBridgeKind             = "KafkaBridge"
 	kafkaConnectKind            = "KafkaConnect"
 	kafkaMirrorMaker2Kind       = "KafkaMirrorMaker2"
@@ -143,6 +147,45 @@ func setGroupVersionKindIfEmpty(obj runtime.Object, gvk schema.GroupVersionKind)
 	}
 
 	obj.GetObjectKind().SetGroupVersionKind(gvk)
+}
+
+// listStrimziResources lists the resources of a Strimzi kind with the newest API version the cluster serves.
+// Strimzi serves v1 from 0.49 on, older releases only serve v1beta2, so the versions are tried in that order.
+// It returns an apimeta no-match error if the cluster serves none of them.
+func listStrimziResources(
+	ctx context.Context,
+	list func(ctx context.Context, list *unstructured.UnstructuredList) error,
+	gvk schema.GroupVersionKind,
+) ([]unstructured.Unstructured, schema.GroupVersionKind, error) {
+	var noMatchErr error
+
+	for _, version := range []string{gvk.Version, kafkaStrimziLegacyVersion} {
+		candidate := schema.GroupVersionKind{Group: gvk.Group, Version: version, Kind: gvk.Kind}
+		resources := &unstructured.UnstructuredList{}
+		resources.SetGroupVersionKind(schema.GroupVersionKind{Group: candidate.Group, Version: candidate.Version, Kind: candidate.Kind + "List"})
+
+		err := list(ctx, resources)
+		if err == nil {
+			return resources.Items, candidate, nil
+		}
+
+		if !apimeta.IsNoMatchError(err) {
+			return nil, gvk, fmt.Errorf("failed to list %s %s: %w", candidate.Kind, candidate.Version, err)
+		}
+
+		noMatchErr = err
+	}
+
+	return nil, gvk, noMatchErr //nolint:wrapcheck // the caller checks for the no-match error type
+}
+
+// gvkOrDefault returns the GVK of the object if it is set, otherwise the default.
+func gvkOrDefault(obj *unstructured.Unstructured, gvk schema.GroupVersionKind) schema.GroupVersionKind {
+	if obj != nil && !obj.GroupVersionKind().Empty() {
+		return obj.GroupVersionKind()
+	}
+
+	return gvk
 }
 
 // getExternallyScaled returns identifiers for workloads which are being scaled externally and should therefore be excluded.
